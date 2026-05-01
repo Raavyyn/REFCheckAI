@@ -1,16 +1,70 @@
-# React + Vite
+🏁 RefCheck AI: Multimodal Replay Referee
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+RefCheck AI is an advanced video analysis tool designed to assist in sports officiating. Using Google's Gemini 2.5 multimodal models, it analyzes video clips to determine if a referee's call was correct, applying specific rulebooks and visual focus parameters for different sports.
+🚀 Core Features
 
-Currently, two official plugins are available:
+    Hybrid Rule Engine: Uses a fast, static rule set for standard sports and a high-fidelity PDF-based rulebook for Tennis.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+    Gemini Context Caching: Implements explicit caching for the Tennis rulebook (TennisRules.pdf), reducing latency and token costs by 90% for repeated analysis.
 
-## React Compiler
+    Decisive Moment Identification: Automatically locates the exact timestamp and frame where a play is decided (e.g., ball bounce, player contact).
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+    Frame Extraction: Uses OpenCV to extract and save the "decisive frame" as visual evidence for the front end.
 
-## Expanding the ESLint configuration
+    Safety Constraints: Includes a mandatory 30-second video limit to ensure efficient processing and prevent API overages.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+🛠 Tech Stack
+
+    AI Model: Google Gemini 2.5 Pro (Primary) & Gemini 2.5 Flash (Fallback)
+
+    Computer Vision: OpenCV (cv2) for frame manipulation and metadata extraction
+
+    Runtime: Python 3.10+ with asyncio for non-blocking analysis
+
+    Environment: python-dotenv for secure API key management
+
+📂 Project Structure
+Plaintext
+
+REFCheckAI/
+├── BackEnd/
+│   ├── main.py                # Core analysis engine & API logic
+│   └── .env                   # API Keys (GEMINI_API_KEY)
+├── Rules/
+│   └── TennisRules.pdf        # Cached rulebook for Tennis analysis
+├── static/
+│   └── evidence_frames/       # Extracted "decisive moment" JPEGs
+├── videos/                    # Local storage for uploaded MP4s
+└── README.md
+
+🏀 Supported Sports
+Sport	Methodology	Focus Areas
+Tennis	Cached PDF Rulebook	Line contact, double bounces, net touches.
+Basketball	Static Rule Logic	Shot clock, out of bounds, shooting fouls.
+Soccer	Static Rule Logic	Goal line technology, offsides, handballs.
+Football	Static Rule Logic	Catch completion, down-by-contact, goal plane.
+Hockey	Static Rule Logic	Crease violations, high-sticking, icing.
+🔍 How It Works
+
+    Validation: The system checks if the video is an .mp4 and confirms it is ≤ 30 seconds.
+
+    Context Loading:
+
+        For standard sports, it loads a predefined list of rules.
+
+        For Tennis, it checks for an existing Context Cache on the Gemini server. If not found, it uploads TennisRules.pdf and creates a 1-hour cache.
+
+    Analysis: The video is sent to Gemini 2.5 Pro. The model performs a temporal analysis (checking frames before, during, and after the event).
+
+    Evidence Extraction: The model returns a JSON response containing a decisive_timestamp. The system then uses OpenCV to "screenshot" that exact moment from the video.
+
+    Verdict: A final JSON object is returned with the verdict (Fair Call, Bad Call, or Inconclusive), reasoning, and a URL to the evidence frame.
+
+⚠️ Important Notes
+
+    API Limits: Large PDF files and videos consume tokens. Tennis analysis uses caching to minimize this, but ensure your Gemini API quota is sufficient.
+
+    Suspicious Timestamps: The engine includes a "Suspicious Timestamp" filter that flags model hallucinations (e.g., if the model suggests a timestamp that occurs after the video has ended).
+
+    [!TIP]
+    Setup instructions are coming soon! We will cover environment variables, virtual environments, and required system dependencies (like FFmpeg for OpenCV).
