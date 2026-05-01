@@ -6,20 +6,21 @@ from pathlib import Path
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-
+import datetime
+ 
 ENV_PATH = Path(__file__).with_name(".env")
 load_dotenv(dotenv_path=ENV_PATH)
-
+ 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
+ 
 PRIMARY_MODEL = "models/gemini-2.5-pro"
 FALLBACK_MODEL = "models/gemini-2.5-flash"
-
-
+ 
+ 
 # -----------------------------
 # SPORT-SPECIFIC CONTEXT ONLY
 # -----------------------------
-
+ 
 def basketball_context():
     return {
         "sport": "basketball",
@@ -46,8 +47,8 @@ def basketball_context():
         shot clock/game clock, dribble control, cylinder/rim contact, and whether contact affected the play.
         """
     }
-
-
+ 
+ 
 def baseball_context():
     return {
         "sport": "baseball",
@@ -68,8 +69,8 @@ def baseball_context():
         and whether the ball or runner arrived first.
         """
     }
-
-
+ 
+ 
 def soccer_context():
     return {
         "sport": "soccer",
@@ -87,8 +88,8 @@ def soccer_context():
         arm/hand contact, tackle direction, and whether the player played the ball or opponent.
         """
     }
-
-
+ 
+ 
 def football_context():
     return {
         "sport": "football",
@@ -108,8 +109,8 @@ def football_context():
         timing of contact, and whether the player had control before losing the ball.
         """
     }
-
-
+ 
+ 
 def hockey_context():
     return {
         "sport": "hockey",
@@ -130,8 +131,8 @@ def hockey_context():
         goalie contact, stick position, and whether contact affected the play.
         """
     }
-
-
+ 
+ 
 def volleyball_context():
     return {
         "sport": "volleyball",
@@ -151,28 +152,60 @@ def volleyball_context():
         hand contact quality, net contact, service foot placement, and centerline crossing.
         """
     }
-
-
-def tennis_context():
+ 
+ 
+async def get_tennis_cache():
+    """
+    Creates or retrieves a cache for the Tennis Rules PDF using the correct SDK syntax.
+    """
+    # The SDK usually expects the full resource name or just the ID
+    cache_id = "tennis-rules-cache-v1"
+   
+    try:
+        # 1. Attempt to retrieve existing cache
+        # Note: If this fails with 403/404, it means it doesn't exist
+        existing_cache = client.caches.get(name=cache_id)
+        return existing_cache
+    except Exception as e:
+        # 2. If not found, upload and create
+        print("Cache not found or expired. Re-caching Tennis Rulebook...")
+       
+        rules_path = "Rules/TennisRules.pdf"
+        if not os.path.exists(rules_path):
+            raise FileNotFoundError(f"Could not find rulebook at {rules_path}")
+ 
+        # Upload the file
+        rules_file = client.files.upload(file=rules_path)
+       
+        # Wait for file processing (PDFs are usually fast but good to be safe)
+        while client.files.get(name=rules_file.name).state.name == "PROCESSING":
+            await asyncio.sleep(1)
+ 
+        # 3. Create the cache using direct parameters
+        # We don't use types.CreateCacheConfig anymore
+        tennis_cache = client.caches.create(
+            model=PRIMARY_MODEL,
+            config={
+                "contents": [rules_file],
+                "ttl": "3600s", # 1 hour in seconds string format
+            }
+        )
+        return tennis_cache
+ 
+async def tennis_context():
+    # We now return the cache name to be used in the generate_content call
+    cache = await get_tennis_cache()
     return {
         "sport": "tennis",
-        "rules": """
-        - Rule 1: A ball touching any part of a boundary line is IN.
-        - Rule 2: A ball is OUT only if it lands completely outside the line.
-        - Rule 3: A net cord during a rally is legal if the ball lands in.
-        - Rule 4: A serve that hits the net and lands in the correct service box is a let.
-        - Rule 5: A double bounce means the player failed to return the ball legally.
-        - Rule 6: A player loses the point if they touch the net while the ball is in play.
-        - Rule 7: A player loses the point if the ball touches them before bouncing.
-        - Rule 8: If evidence is unclear, the verdict must be Inconclusive.
-        """,
+        "cache_name": cache.name,
+        "rules": "Refer to the attached TennisRules.pdf for all officiating decisions.",
         "visual_focus": """
         Focus on ball bounce location, line contact, double bounce timing,
         net contact, player contact, and whether the decisive moment is clearly visible.
         """
     }
-
-
+ 
+ 
 SPORT_CONTEXTS = {
     "baseball": baseball_context,
     "basketball": basketball_context,
@@ -182,11 +215,11 @@ SPORT_CONTEXTS = {
     "volleyball": volleyball_context,
     "tennis": tennis_context,
 }
-
+ 
 # -----------------------------
 # GENERIC HELPERS
 # -----------------------------
-
+ 
 def timestamp_to_seconds(timestamp):
     try:
         parts = timestamp.strip().split(":")
@@ -195,50 +228,50 @@ def timestamp_to_seconds(timestamp):
         return minutes * 60 + seconds
     except Exception:
         return None
-
-
+ 
+ 
 def extract_frame_at_timestamp(video_path, timestamp, output_path):
     seconds = timestamp_to_seconds(timestamp)
-
+ 
     if seconds is None:
         return None
-
+ 
     cap = cv2.VideoCapture(video_path)
-
+ 
     fps = cap.get(cv2.CAP_PROP_FPS)
-
+ 
     if fps <= 0:
         cap.release()
         return None
-
+ 
     frame_number = int(seconds * fps)
-
+ 
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-
+ 
     ret, frame = cap.read()
     cap.release()
-
+ 
     if not ret:
         return None
-
+ 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     cv2.imwrite(output_path, frame)
-
+ 
     return {
         "frame_number": frame_number,
         "image_path": output_path
     }
-
+ 
 def validate_video(video_path):
     if not video_path.lower().endswith(".mp4"):
         return "Only .mp4 video files are supported."
-
+ 
     if not os.path.exists(video_path):
         return f"Video not found: {video_path}"
-
+ 
     return None
-
-
+ 
+ 
 def safe_json_parse(response):
     fallback = {
         "verdict": "Inconclusive",
@@ -251,47 +284,47 @@ def safe_json_parse(response):
         "timestamps": "unknown",
         "certainty": "0%"
     }
-
+ 
     try:
         if response.parsed:
             return response.parsed
     except Exception:
         pass
-
+ 
     raw_text = ""
-
+ 
     try:
         raw_text = response.text.strip()
     except Exception:
         return fallback
-
+ 
     try:
         return json.loads(raw_text)
     except Exception:
         pass
-
+ 
     # Remove markdown code fences if Gemini wraps JSON
     cleaned = raw_text.replace("```json", "").replace("```", "").strip()
-
+ 
     try:
         return json.loads(cleaned)
     except Exception:
         pass
-
+ 
     # Extract first JSON object from messy text
     start = cleaned.find("{")
     end = cleaned.rfind("}")
-
+ 
     if start != -1 and end != -1 and end > start:
         candidate = cleaned[start:end + 1]
-
+ 
         try:
             return json.loads(candidate)
         except Exception:
             pass
-
+ 
     return fallback
-
+ 
 def normalize_final_json(raw):
     required = {
         "verdict": "Inconclusive",
@@ -304,17 +337,17 @@ def normalize_final_json(raw):
         "timestamps": "unknown",
         "certainty": "0%"
     }
-
+ 
     if not isinstance(raw, dict):
         return required
-
+ 
     for key in required:
         if key not in raw or raw[key] in [None, ""]:
             raw[key] = required[key]
-
+ 
     if raw["verdict"] not in ["Fair Call", "Bad Call", "Inconclusive"]:
         raw["verdict"] = "Inconclusive"
-
+ 
     return {
         "verdict": str(raw["verdict"]),
         "event_identified": str(raw["event_identified"]),
@@ -326,10 +359,10 @@ def normalize_final_json(raw):
         "timestamps": str(raw["timestamps"]),
         "certainty": str(raw["certainty"])
     }
-
+ 
 async def loading_indicator(stop_event):
     start_time = asyncio.get_event_loop().time()
-
+ 
     messages = [
         "Uploading and reading video...",
         "Finding the decisive moment...",
@@ -337,127 +370,133 @@ async def loading_indicator(stop_event):
         "Waiting for Gemini response...",
         "Still working..."
     ]
-
+ 
     i = 0
-
+ 
     while not stop_event.is_set():
         await asyncio.sleep(10)
-
+ 
         if not stop_event.is_set():
             elapsed = int(asyncio.get_event_loop().time() - start_time)
-
+ 
             print("\n  > [RefCheck AI] STATUS UPDATE")
             print("  > Elapsed Time:", str(elapsed), "seconds")
             print("  > Current Step:", messages[i % len(messages)])
-
+ 
             i += 1
-
-def generate_with_fallback(video_upload, prompt):
-    models_to_try = [
-        PRIMARY_MODEL,
-        FALLBACK_MODEL
-    ]
-
+ 
+def generate_with_fallback(video_upload, prompt, cache_name=None):
+    models_to_try = [PRIMARY_MODEL, FALLBACK_MODEL]
     last_error = None
-
+ 
     for model_name in models_to_try:
         try:
-            print("\nTrying model:", model_name)
-
+            # Use the cache if it's a tennis match
+            config_args = {
+                "response_mime_type": "application/json",
+                "temperature": 0.0
+            }
+            if cache_name and model_name == PRIMARY_MODEL:
+                config_args["cached_content"] = cache_name
+ 
             response = client.models.generate_content(
                 model=model_name,
                 contents=[video_upload, prompt],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.0
-                )
+                config=types.GenerateContentConfig(**config_args)
             )
-
-            print("Model succeeded:", model_name)
             return response
-
         except Exception as exc:
-            print("Model failed:", model_name)
-            print("Reason:", str(exc))
             last_error = exc
-
     raise Exception(last_error)
-
+ 
 def get_video_duration_seconds(video_path):
     cap = cv2.VideoCapture(video_path)
-
+ 
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-
+ 
     cap.release()
-
+ 
     if fps <= 0:
         return None
-
+ 
     return frame_count / fps
-
+ 
 def is_suspicious_timestamp(timestamp, video_duration):
     seconds = timestamp_to_seconds(timestamp)
-
+ 
     if seconds is None:
         return True
-
+ 
     if video_duration and seconds > video_duration:
         return True
-
+ 
     # Reject near-zero timestamp unless the video is extremely short
     if seconds < 0.25 and video_duration and video_duration > 2:
         return True
-
+ 
     return False
-
+ 
 # -----------------------------
 # GENERIC ANALYSIS ENGINE
 # -----------------------------
-
+ 
 async def analyze_play(video_path, sport, claimed_call=None, debug=True):
     sport = sport.lower().strip()
-
+ 
+    # 1. Basic Validation
     error = validate_video(video_path)
     if error:
         return {"error": error}
-
-    if sport not in SPORT_CONTEXTS:
+ 
+    if sport not in SPORT_CONTEXTS and sport != "tennis":
         return {"error": "Sport '" + sport + "' is not supported."}
-
-    context = SPORT_CONTEXTS[sport]()
-
+ 
+    # 2. Check Video Duration (Max 30 seconds)
+    video_duration = get_video_duration_seconds(video_path)
+    if video_duration is not None and video_duration > 30:
+        return {
+            "error": "Video is too long.",
+            "details": f"Maximum allowed length is 30 seconds. Provided video is {video_duration:.2f} seconds."
+        }
+ 
+    # 3. Get Context (Handle Async Tennis Cache vs Static Dicts)
+    if sport == "tennis":
+        context = await tennis_context()
+    else:
+        context = SPORT_CONTEXTS[sport]()
+ 
     if debug:
-        print("Uploading video for " + sport + " analysis...")
-
+        print(f"Uploading video for {sport} analysis...")
+ 
+    # 4. Upload and Process Video
     video_upload = client.files.upload(file=video_path)
-
+ 
     while client.files.get(name=video_upload.name).state.name == "PROCESSING":
         await asyncio.sleep(2)
-
+ 
     claimed_call_text = claimed_call if claimed_call else "No explicit call was provided. Infer the original call only if it is clearly visible or audible. If the original call cannot be determined, return Inconclusive."
-    video_duration = get_video_duration_seconds(video_path)
-
+   
     prompt = f"""
     ROLE:
     You are a generic AI replay referee. You are not a tennis-only, basketball-only, or football-only model.
     Your job is to judge whether the original referee/player call was correct using ONLY the video evidence
     and the sport-specific rules provided below.
-
+ 
     SPORT:
     {context["sport"]}
-
+ 
     ORIGINAL CALL TO CHECK:
     {claimed_call_text}
-
+ 
     SPORT-SPECIFIC RULES:
     {context["rules"]}
-
+ 
     SPORT-SPECIFIC VISUAL FOCUS:
     {context["visual_focus"]}
-
+ 
     UNIVERSAL OFFICIATING PROCEDURE:
-
+ 
     Step 1 — Identify the decisive moment.
     Find the most important instant in the clip where the disputed play is decided.
     This may include (but is not exclusive to):
@@ -472,11 +511,11 @@ async def analyze_play(video_path, sport, claimed_call=None, debug=True):
     - boundary interaction
     - net contact
     - possession change
-
+ 
     Step 2 — Analyze temporal context.
     Carefully inspect the frames immediately BEFORE, DURING, and AFTER the decisive moment. (Could be more than one frame)
     Do not judge the play using a single isolated frame.
-
+ 
     Step 3 — Determine the relevant interaction.
     Identify:
     - timing
@@ -486,38 +525,38 @@ async def analyze_play(video_path, sport, claimed_call=None, debug=True):
     - body positioning
     - ball/object trajectory
     - sequence of events
-
+ 
     Step 4 — Apply ONLY the relevant sport-specific rules.
     Ignore unrelated rules.
-
+ 
     Step 5 — Return a verdict.
     - Fair Call = original call was correct
     - Bad Call = original call was incorrect
     - Inconclusive = evidence is insufficient
-
+ 
     You must identify ONE decisive timestamp.
     This is the timestamp where the disputed call is best resolved.
     Do not send an image.
     Only return the timestamp as text in decisive_timestamp.
-
+ 
     VIDEO TIMING:
     The uploaded video starts at 00:00.00.
     All timestamps must be measured from the beginning of this uploaded MP4.
     The full video duration is approximately {video_duration:.2f} seconds.
     Do not use broadcast/game-clock time.
     Do not use relative time from the decisive moment.
-
+ 
     You must return the decisive timestamp measured from the start of the uploaded MP4.
-
+ 
     You must also estimate the decisive frame number.
-
+ 
     Example:
     If the decisive moment occurs around 3 seconds into a 25 fps video, return:
     "decisive_timestamp": "00:03.00"
     "decisive_frame_number": 75
-
+ 
     Do not return "00:00.02" unless the decisive moment truly happens within the first 0.02 seconds of the uploaded video.    
-
+ 
     REQUIRED JSON FORMAT:
     {{
         "verdict": "Fair Call" | "Bad Call" | "Inconclusive",
@@ -531,36 +570,39 @@ async def analyze_play(video_path, sport, claimed_call=None, debug=True):
         "certainty": "XX%"
     }}
     """
-
     stop_loading = asyncio.Event()
     loading_task = asyncio.create_task(loading_indicator(stop_loading))
-
+ 
     try:
-        response = generate_with_fallback(video_upload, prompt)
-
+        # Retrieve cache_name if it exists (for Tennis)
+        cache_name = context.get("cache_name")
+       
+        # Pass the cache_name to the generation helper
+        response = generate_with_fallback(video_upload, prompt, cache_name=cache_name)
+ 
         parsed = safe_json_parse(response)
         final_result = normalize_final_json(parsed)
-
+ 
         decisive_timestamp = final_result.get("decisive_timestamp", "unknown")
-
+ 
         if decisive_timestamp != "unknown" and is_suspicious_timestamp(decisive_timestamp, video_duration):
             print("Suspicious timestamp from model:", decisive_timestamp)
             final_result["timestamp_warning"] = "Model returned a suspicious timestamp."
             final_result["decisive_frame_number"] = None
             final_result["decisive_frame_url"] = None
             return final_result
-
+ 
         if decisive_timestamp != "unknown":
             output_dir = "static/evidence_frames"
             output_filename = "decisive_frame.jpg"
             output_path = os.path.join(output_dir, output_filename)
-
+ 
             frame_info = extract_frame_at_timestamp(
                 video_path,
                 decisive_timestamp,
                 output_path
             )
-
+ 
             if frame_info:
                 final_result["model_decisive_frame_number"] = final_result.get("decisive_frame_number", "unknown")
                 final_result["decisive_frame_number"] = frame_info["frame_number"]
@@ -571,35 +613,35 @@ async def analyze_play(video_path, sport, claimed_call=None, debug=True):
         else:
             final_result["decisive_frame_number"] = None
             final_result["decisive_frame_url"] = None
-
+ 
         return final_result
-
+ 
     except Exception as exc:
         return {"error": "Analysis failed: " + str(exc)}
-
+ 
     finally:
         stop_loading.set()
         await loading_task
-
+ 
 # -----------------------------
 # TERMINAL DEBUGGING
 # -----------------------------
-
+ 
 if __name__ == "__main__":
-    target_video = "videos/BBClip4.mp4"
-    sport = "basketball"
-
+    target_video = "videos/TClip1.mp4"
+    sport = "tennis"
+ 
     # Optional but strongly recommended:
     # examples: "The player/referee called the ball OUT"
     #           "The referee called a foul"
     #           "The shot was ruled after the buzzer"
     claimed_call = ""
-
+ 
     print("--- Starting RefCheck AI ---")
     print("Video:", target_video)
     print("Sport:", sport)
     print("Claimed call:", claimed_call)
-
+ 
     result = asyncio.run(
         analyze_play(
             video_path=target_video,
@@ -608,50 +650,6 @@ if __name__ == "__main__":
             debug=True
         )
     )
-
+ 
     print("\n--- FINAL VERDICT ---")
     print(json.dumps(result, indent=2))
-
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware
-
-app = FastAPI()
-
-# -----------------------------
-# CORS (IMPORTANT for React)
-# -----------------------------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Vite default
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# -----------------------------
-# API ENDPOINT
-# -----------------------------
-@app.post("/analyze")
-async def analyze_endpoint(
-    file: UploadFile = File(...),
-    sport: str = Form(...)
-):
-    # Save uploaded video temporarily
-    video_path = f"temp_{file.filename}"
-
-    with open(video_path, "wb") as f:
-        f.write(await file.read())
-
-    try:
-        result = await analyze_play(
-            video_path=video_path,
-            sport=sport,
-            claimed_call=""
-        )
-        return result
-
-    finally:
-        # cleanup file
-        if os.path.exists(video_path):
-            os.remove(video_path)
- 
